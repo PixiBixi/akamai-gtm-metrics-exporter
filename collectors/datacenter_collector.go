@@ -111,6 +111,7 @@ func (d *GTMDatacenterTrafficExporter) poll(ctx context.Context) error {
 		return err
 	}
 	now := time.Now().UTC()
+	windowEnd = settledWindowEnd(windowEnd, now, d.opts.SettleDelay)
 	var jobs []apiJob
 	for _, t := range d.targets {
 		if len(t.pending) > 0 {
@@ -156,7 +157,7 @@ func (d *GTMDatacenterTrafficExporter) pollTarget(ctx context.Context, sess sess
 			logrus.Errorf("Instance timestamp invalid ... Skipping. Error: %s", err)
 			continue
 		}
-		if ts.After(t.last) {
+		if ts.After(t.last) && settled(ts, windowEnd, d.opts.SettleDelay) {
 			pending = append(pending, pendingRow[*DatacenterTrafficData]{row: row, ts: ts})
 		}
 	}

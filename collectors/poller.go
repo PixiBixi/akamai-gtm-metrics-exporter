@@ -34,6 +34,9 @@ import (
 type PollOptions struct {
 	Interval time.Duration // delay between two poll cycles
 	CacheTTL time.Duration // how long the last traffic sample of a series stays exposed
+	// SettleDelay only reads traffic buckets that ended at least this long ago.
+	// Akamai keeps revising a bucket for ~80 min after it starts, an early read is low.
+	SettleDelay time.Duration
 }
 
 const exporterNamespace = "akamai_gtm_metrics_exporter"
@@ -186,6 +189,23 @@ func trafficQueryRange(last, windowStart, windowEnd, now time.Time) (start, end 
 		end = windowEnd
 	}
 	return start, end, start.Before(end)
+}
+
+// settledWindowEnd caps the report window end to the buckets that ended at
+// least delay ago.
+func settledWindowEnd(windowEnd, now time.Time, delay time.Duration) time.Time {
+	if delay <= 0 {
+		return windowEnd
+	}
+	if cutoff := now.Add(-delay).Truncate(trafficBucket); cutoff.Before(windowEnd) {
+		return cutoff
+	}
+	return windowEnd
+}
+
+// settled tells whether the bucket starting at ts ended by windowEnd.
+func settled(ts, windowEnd time.Time, delay time.Duration) bool {
+	return delay <= 0 || !ts.Add(trafficBucket).After(windowEnd)
 }
 
 // emptyReportCursor is where to resume after a report with no new row up to

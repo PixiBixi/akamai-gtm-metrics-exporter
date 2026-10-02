@@ -58,6 +58,7 @@ var (
 	pollInterval    = kingpin.Flag("poll.interval", "Interval between two polls of the Akamai reporting API.").Default("1m").Duration()
 	pollConcurrency = kingpin.Flag("poll.concurrency", "Maximum concurrent Akamai API requests per collector.").Default("4").Int()
 	apiTimeout      = kingpin.Flag("akamai.timeout", "Timeout of a single Akamai API request.").Default("30s").Duration()
+	settleDelay     = kingpin.Flag("report.settle-delay", "Only read traffic report buckets that ended at least this long ago: Akamai keeps revising a bucket for over an hour after publishing it.").Default("0s").Duration()
 	metricsTTL      = kingpin.Flag("metrics.ttl", "How long the last traffic report sample of a series stays exposed after it was fetched.").Default("10m").Duration()
 
 	lookbackDuration = lookbackDefaultDuration
@@ -206,7 +207,7 @@ func main() {
 	collectors.RegisterPollMetrics(r)
 
 	// Reports are polled in the background, a scrape never waits on the Akamai API.
-	pollOpts := collectors.PollOptions{Interval: *pollInterval, CacheTTL: *metricsTTL}
+	pollOpts := collectors.PollOptions{Interval: *pollInterval, CacheTTL: *metricsTTL, SettleDelay: *settleDelay}
 	dcCollector := collectors.NewDatacenterTrafficCollector(newAPIPool(), r, gtmMetricsConfig, namespace, tstart, lookbackDuration, pollOpts)
 	propertyCollector := collectors.NewPropertyTrafficCollector(newAPIPool(), r, gtmMetricsConfig, namespace, tstart, lookbackDuration, pollOpts)
 	livenessCollector := collectors.NewLivenessTrafficCollector(newAPIPool(), r, gtmMetricsConfig, namespace, tstart, lookbackDuration, pollOpts)

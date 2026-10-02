@@ -144,6 +144,7 @@ func (p *GTMPropertyTrafficExporter) poll(ctx context.Context) error {
 		return err
 	}
 	now := time.Now().UTC()
+	windowEnd = settledWindowEnd(windowEnd, now, p.opts.SettleDelay)
 	var jobs []apiJob
 	for _, t := range p.targets {
 		if len(t.pending) > 0 {
@@ -189,7 +190,7 @@ func (p *GTMPropertyTrafficExporter) pollTarget(ctx context.Context, sess sessio
 			logrus.Errorf("Instance timestamp invalid ... Skipping. Error: %s", err)
 			continue
 		}
-		if ts.After(t.last) {
+		if ts.After(t.last) && settled(ts, windowEnd, p.opts.SettleDelay) {
 			pending = append(pending, pendingRow[*PropertyTrafficData]{row: row, ts: ts})
 		}
 	}

@@ -390,3 +390,34 @@ func TestConcurrentScrapesDuringPoll(t *testing.T) {
 		assert.Equal(t, 3.0, s.value)
 	}
 }
+
+func TestSettledWindowEnd(t *testing.T) {
+	now := ts("2026-10-02T22:33:00Z")
+	wEnd := ts("2026-10-02T22:00:00Z")
+	assert.Equal(t, wEnd, settledWindowEnd(wEnd, now, 0), "disabled")
+	assert.Equal(t, ts("2026-10-02T21:05:00Z"), settledWindowEnd(wEnd, now, 85*time.Minute))
+	assert.Equal(t, wEnd, settledWindowEnd(wEnd, now, 10*time.Minute), "never past the window end")
+}
+
+// Buckets still being revised by Akamai are not read before they settle.
+func TestDatacenterCollectorSettleDelay(t *testing.T) {
+	f := newFakeAPI(t)
+	now := time.Now().UTC()
+	cutoff := now.Add(-85 * time.Minute).Truncate(trafficBucket)
+	f.trafficWindow = [2]time.Time{now.Add(-48 * time.Hour), now.Add(-35 * time.Minute).Truncate(trafficBucket)}
+	var rows []*DatacenterTrafficData
+	for b := cutoff.Add(-30 * time.Minute); b.Before(f.trafficWindow[1]); b = b.Add(trafficBucket) {
+		rows = append(rows, dcRow(b.Format(GTMTrafficLongTimeFormat), b.Unix()))
+	}
+	f.dcRows["example.akadns.net/3131"] = rows
+	opts := testOpts
+	opts.SettleDelay = 85 * time.Minute
+	c := NewDatacenterTrafficCollector(f.pool(t, 1), prometheus.NewRegistry(), dcConfig("example.akadns.net", 3131),
+		"akamai_gtm_", cutoff.Add(-20*time.Minute), time.Hour, opts)
+	for i := 0; i < 10; i++ {
+		require.NoError(t, c.poll(context.Background()))
+	}
+	got := collectSamples(t, c)[`akamai_gtm_datacenter_traffic_requests_per_interval{datacenter="3131",domain="example.akadns.net"}`]
+	assert.Equal(t, float64(cutoff.Add(-trafficBucket).Unix()), got.value, "last settled bucket is the one ending at the cutoff")
+	assert.Equal(t, cutoff, c.targets[0].fetchedThrough)
+}
