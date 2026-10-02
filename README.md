@@ -164,6 +164,10 @@ Flags:
       --log.level="info"  Only log messages with the given severity or above. Valid levels: [debug, info, warn, error, fatal]
       --log.format="logger:stderr"
                           Set the log target and format. Example: "logger:stdout?json=true".
+      --poll.interval=1m    Interval between two polls of the Akamai reporting API.
+      --poll.concurrency=4  Maximum concurrent Akamai API requests per collector.
+      --akamai.timeout=30s  Timeout of a single Akamai API request.
+      --metrics.ttl=10m     How long the last report sample of a series stays exposed after it was fetched.
       --version           Show application version.
 ```
 
@@ -186,6 +190,14 @@ Flags:
 ## Collectors
 
 The Akamai GTM Exporter contains collectors to gather traffic information for GTM domain datacenters and properties, as well as property liveness test failures. Each of these collectors has its own configuration, metrics and behaviors.
+
+Collectors poll the Akamai reporting API in the background every `--poll.interval`; a scrape only serves the cached samples and never calls the API. Each report row is exposed once fetched and stays exposed for `--metrics.ttl`, or until a newer row replaces it.
+
+| Metric | Description |
+| ------ | ----------- |
+| `akamai_gtm_metrics_exporter_poll_duration_seconds{collector}` | Duration of the last poll cycle |
+| `akamai_gtm_metrics_exporter_last_successful_poll_timestamp_seconds{collector}` | Unix time of the last poll cycle whose report window could be fetched |
+| `akamai_gtm_metrics_exporter_api_requests_total{collector,endpoint,outcome}` | Akamai API requests, `endpoint` is `window` or `report`, `outcome` is `success` or `error` |
 
 ### Datacenter traffic
 
