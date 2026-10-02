@@ -32,6 +32,9 @@ const (
 	livenessCollectorName = "liveness"
 	// Bounds the days walked in one cycle when catching up across midnight.
 	livenessMaxDaysPerCycle = 3
+	// An error is exposed while its report time is less than this behind the
+	// window end. Ties exposure to Akamai time, so a restart never shows old errors as current.
+	livenessExposure = 5 * time.Minute
 )
 
 type LivenessTMeta struct {
@@ -75,7 +78,6 @@ type livenessTarget struct {
 	cfg            *LivenessTestConfig
 	last           time.Time // timestamp of the last processed report row
 	fetchedThrough time.Time // report window end at the last fetch of its last day
-	pending        []pendingRow[*LivenessTData]
 }
 
 func NewLivenessTrafficCollector(api *APIPool, r *prometheus.Registry, gtmMetricsConfig GTMMetricsConfig, gtmMetricPrefix string, tstart time.Time, lookbackDuration time.Duration, opts PollOptions) *GTMLivenessTrafficExporter {
@@ -156,11 +158,6 @@ func (l *GTMLivenessTrafficExporter) poll(ctx context.Context) error {
 	}
 	var jobs []apiJob
 	for _, t := range l.targets {
-		if len(t.pending) > 0 {
-			l.processRow(t, t.pending[0].row, t.pending[0].ts)
-			t.pending = t.pending[1:]
-			continue
-		}
 		// The report is per day: refetching it is only worth it once the window moved.
 		if !windowEnd.After(t.fetchedThrough) {
 			continue
@@ -196,16 +193,14 @@ func (l *GTMLivenessTrafficExporter) pollTarget(ctx context.Context, sess sessio
 			logrus.Warnf("Unable to get liveness report for property %s in domain %s ... Skipping. Error: %s", t.cfg.PropertyName, t.domain, err)
 			return
 		}
+		// Every new row at once: a burst holds one row per test agent, all
+		// within minutes. The cache keeps the latest row per series.
+		now := time.Now()
+		for _, r := range rows {
+			l.processRow(t, r.row, r.ts, windowEnd, now)
+		}
 		if day.Equal(lastDay) {
 			t.fetchedThrough = windowEnd
-		}
-		if len(rows) > 0 {
-			// One row per cycle, as the scrape-time collector did. The rest is queued.
-			l.processRow(t, rows[0].row, rows[0].ts)
-			t.pending = rows[1:]
-			return
-		}
-		if day.Equal(lastDay) {
 			return
 		}
 		if endOfDay := day.Add(24*time.Hour - time.Second); endOfDay.After(t.last) {
@@ -245,9 +240,15 @@ func (l *GTMLivenessTrafficExporter) fetchNewRows(ctx context.Context, sess sess
 	return rows, nil
 }
 
-func (l *GTMLivenessTrafficExporter) processRow(t *livenessTarget, row *LivenessTData, ts time.Time) {
-	now := time.Now()
+func (l *GTMLivenessTrafficExporter) processRow(t *livenessTarget, row *LivenessTData, ts, windowEnd, now time.Time) {
 	prop := t.cfg
+	// Rows already older than the exposure are still counted by the histograms.
+	hold := ts.Add(livenessExposure).Sub(windowEnd)
+	expose := func(key string, m prometheus.Metric) {
+		if hold > 0 {
+			l.cache.putUntil(key, m, now.Add(hold))
+		}
+	}
 	failuresName := prometheus.BuildFQName(l.LivenessMetricPrefix, "", "datacenter_failures")
 	durationName := prometheus.BuildFQName(l.LivenessMetricPrefix, "", "datacenter_failure_duration")
 	tsLabel := ts.Format(time.RFC3339)
@@ -275,12 +276,12 @@ func (l *GTMLivenessTrafficExporter) processRow(t *livenessTarget, row *Liveness
 		failures := prometheus.MustNewConstMetric(
 			prometheus.NewDesc(failuresName, "Number of datacenter failures (per domain, property, datacenter)", labelNames, nil),
 			prometheus.CounterValue, 1, labelValues...)
-		l.cache.put(seriesKey(failuresName, labelValues...), withReportTimestamp(l.GTMConfig, ts, failures), now)
+		expose(seriesKey(failuresName, labelValues...), withReportTimestamp(l.GTMConfig, ts, failures))
 
 		duration := prometheus.MustNewConstMetric(
 			prometheus.NewDesc(durationName, "Datacenter failure duration (per domain, property, datacenter)", labelNames, nil),
 			prometheus.GaugeValue, float64(dc.Duration), labelValues...)
-		l.cache.put(seriesKey(durationName, labelValues...), withReportTimestamp(l.GTMConfig, ts, duration), now)
+		expose(seriesKey(durationName, labelValues...), withReportTimestamp(l.GTMConfig, ts, duration))
 
 		l.observe(t.domain, prop.PropertyName, dc.DatacenterID, float64(dc.Duration))
 	}

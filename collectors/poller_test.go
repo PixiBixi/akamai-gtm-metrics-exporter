@@ -205,7 +205,7 @@ func liveRow(timestamp string, dcID int, errorCode, duration int64) *LivenessTDa
 
 func TestLivenessCollectorMetrics(t *testing.T) {
 	f := newFakeAPI(t)
-	f.livenessWindow = [2]time.Time{ts("2026-07-01T00:00:00Z"), ts("2026-10-02T19:50:00Z")}
+	f.livenessWindow = [2]time.Time{ts("2026-07-01T00:00:00Z"), ts("2026-10-02T19:44:00Z")}
 	f.liveRows["example.akadns.net/www"] = []*LivenessTData{liveRow("2026-10-02T19:42:34Z", 3138, 2503, 60)}
 	reg := prometheus.NewRegistry()
 	c := NewLivenessTrafficCollector(f.pool(t, 1), reg, livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T19:40:00Z"), time.Hour, testOpts)
@@ -240,7 +240,7 @@ func TestLivenessCollectorCrossesMidnight(t *testing.T) {
 	require.NoError(t, c.poll(context.Background()))
 
 	f.mu.Lock()
-	f.livenessWindow[1] = ts("2026-10-02T00:20:00Z")
+	f.livenessWindow[1] = ts("2026-10-02T00:12:00Z")
 	f.liveRows["example.akadns.net/www"] = append(f.liveRows["example.akadns.net/www"], liveRow("2026-10-02T00:10:00Z", 3138, 2504, 120))
 	f.mu.Unlock()
 	require.NoError(t, c.poll(context.Background()))
@@ -251,7 +251,7 @@ func TestLivenessCollectorCrossesMidnight(t *testing.T) {
 
 func TestLivenessCollectorFilterQuery(t *testing.T) {
 	f := newFakeAPI(t)
-	f.livenessWindow = [2]time.Time{ts("2026-07-01T00:00:00Z"), ts("2026-10-02T19:50:00Z")}
+	f.livenessWindow = [2]time.Time{ts("2026-07-01T00:00:00Z"), ts("2026-10-02T19:44:00Z")}
 	f.liveRows["example.akadns.net/www"] = []*LivenessTData{liveRow("2026-10-02T19:42:34Z", 3138, 2503, 60)}
 	cfg := livenessConfig("example.akadns.net", "www")
 	cfg.Domains[0].Liveness[0].TargetIP = "216.22.16.32"
@@ -260,6 +260,61 @@ func TestLivenessCollectorFilterQuery(t *testing.T) {
 
 	assert.Contains(t, collectSamples(t, c),
 		`akamai_gtm_property_liveness_errors_datacenter_failures{datacenter="3138",domain="example.akadns.net",errorcode="2503",property="www",targetip="216.22.16.32"}`)
+}
+
+func burstRows(from string, n int) []*LivenessTData {
+	start := ts(from)
+	var rows []*LivenessTData
+	for i := 0; i < n; i++ {
+		row := liveRow(start.Add(time.Duration(i)*10*time.Second).Format(GTMTrafficLongTimeFormat), 3135, 2503, 60)
+		row.Datacenters[0].AgentIP = fmt.Sprintf("23.0.0.%d", i) // one row per test agent
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// A burst (one row per test agent) is exposed in one cycle, not one row per cycle.
+func TestLivenessCollectorBurstInOneCycle(t *testing.T) {
+	f := newFakeAPI(t)
+	f.livenessWindow = [2]time.Time{ts("2026-07-01T00:00:00Z"), ts("2026-10-02T21:18:00Z")}
+	f.liveRows["example.akadns.net/www"] = burstRows("2026-10-02T21:12:00Z", 30)
+	reg := prometheus.NewRegistry()
+	c := NewLivenessTrafficCollector(f.pool(t, 1), reg, livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T21:00:00Z"), time.Hour, testOpts)
+	require.NoError(t, c.poll(context.Background()))
+
+	assert.Len(t, collectSamples(t, c), 2, "failures + duration for the one series")
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	for _, mf := range mfs {
+		m := mf.GetMetric()[0]
+		assert.Equal(t, uint64(30), m.GetHistogram().GetSampleCount()+m.GetSummary().GetSampleCount(), mf.GetName())
+	}
+	assert.Equal(t, 1, f.callCount("live-report"))
+}
+
+// Rows older than the exposure behind the window end are counted, never shown as current.
+func TestLivenessCollectorRestartDoesNotReplayOldErrors(t *testing.T) {
+	f := newFakeAPI(t)
+	f.livenessWindow = [2]time.Time{ts("2026-07-01T00:00:00Z"), ts("2026-10-02T21:58:00Z")}
+	f.liveRows["example.akadns.net/www"] = burstRows("2026-10-02T21:12:00Z", 30)
+	reg := prometheus.NewRegistry()
+	c := NewLivenessTrafficCollector(f.pool(t, 1), reg, livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T21:00:00Z"), time.Hour, testOpts)
+	require.NoError(t, c.poll(context.Background()))
+
+	assert.Empty(t, collectSamples(t, c))
+	mfs, err := reg.Gather()
+	require.NoError(t, err)
+	require.Len(t, mfs, 2)
+}
+
+func TestLivenessExposureFollowsReportTime(t *testing.T) {
+	c := NewLivenessTrafficCollector(nil, prometheus.NewRegistry(), livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T21:00:00Z"), time.Hour, testOpts)
+	now := time.Now()
+	c.processRow(c.targets[0], liveRow("2026-10-02T21:12:00Z", 3135, 2503, 60), ts("2026-10-02T21:12:00Z"), ts("2026-10-02T21:14:00Z"), now)
+	require.Len(t, c.cache.entries, 2)
+	for _, e := range c.cache.entries {
+		assert.Equal(t, now.Add(3*time.Minute), e.expires, "exposed until the window end is 5 min past the row")
+	}
 }
 
 func TestSampleCacheExpiry(t *testing.T) {

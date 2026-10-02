@@ -33,7 +33,7 @@ import (
 // Reports are fetched off the scrape path, Collect only serves the cache.
 type PollOptions struct {
 	Interval time.Duration // delay between two poll cycles
-	CacheTTL time.Duration // how long the last sample of a series stays exposed
+	CacheTTL time.Duration // how long the last traffic sample of a series stays exposed
 }
 
 const exporterNamespace = "akamai_gtm_metrics_exporter"
@@ -244,9 +244,13 @@ func newSampleCache(ttl time.Duration) *sampleCache {
 }
 
 func (c *sampleCache) put(key string, m prometheus.Metric, now time.Time) {
+	c.putUntil(key, m, now.Add(c.ttl))
+}
+
+func (c *sampleCache) putUntil(key string, m prometheus.Metric, expires time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[key] = cacheEntry{metric: m, expires: now.Add(c.ttl)}
+	c.entries[key] = cacheEntry{metric: m, expires: expires}
 }
 
 func (c *sampleCache) collect(ch chan<- prometheus.Metric, now time.Time) {

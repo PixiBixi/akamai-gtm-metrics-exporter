@@ -167,7 +167,7 @@ Flags:
       --poll.interval=1m    Interval between two polls of the Akamai reporting API.
       --poll.concurrency=4  Maximum concurrent Akamai API requests per collector.
       --akamai.timeout=30s  Timeout of a single Akamai API request.
-      --metrics.ttl=10m     How long the last report sample of a series stays exposed after it was fetched.
+      --metrics.ttl=10m     How long the last traffic report sample of a series stays exposed after it was fetched.
       --version           Show application version.
 ```
 
@@ -191,7 +191,7 @@ Flags:
 
 The Akamai GTM Exporter contains collectors to gather traffic information for GTM domain datacenters and properties, as well as property liveness test failures. Each of these collectors has its own configuration, metrics and behaviors.
 
-Collectors poll the Akamai reporting API in the background every `--poll.interval`; a scrape only serves the cached samples and never calls the API. Each report row is exposed once fetched and stays exposed for `--metrics.ttl`, or until a newer row replaces it.
+Collectors poll the Akamai reporting API in the background every `--poll.interval`; a scrape only serves the cached samples and never calls the API. A traffic report row is exposed once fetched and stays exposed for `--metrics.ttl`, or until a newer row replaces it. A liveness error is exposed while its report time is less than 5 minutes behind the report window end, so a restart never shows past errors as current; the histograms and summaries count every error row.
 
 | Metric | Description |
 | ------ | ----------- |
