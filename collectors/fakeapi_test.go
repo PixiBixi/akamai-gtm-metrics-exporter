@@ -120,6 +120,11 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "date is required", http.StatusBadRequest)
 			return
 		}
+		// The live API returns a partial day without realTime=true.
+		if q.Get("realTime") != "true" {
+			http.Error(w, "realTime=true expected", http.StatusBadRequest)
+			return
+		}
 		rows := []*LivenessTData{}
 		known, ok := f.liveRows[parts[2]+"/"+parts[4]]
 		if !ok {

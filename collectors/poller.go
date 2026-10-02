@@ -37,6 +37,9 @@ type PollOptions struct {
 	// SettleDelay only reads traffic buckets that ended at least this long ago.
 	// Akamai keeps revising a bucket for ~80 min after it starts, an early read is low.
 	SettleDelay time.Duration
+	// LivenessExposure is how long after it happened a liveness error stays exposed.
+	// Tied to the event time, so a restart never shows a past error as current.
+	LivenessExposure time.Duration
 }
 
 const exporterNamespace = "akamai_gtm_metrics_exporter"

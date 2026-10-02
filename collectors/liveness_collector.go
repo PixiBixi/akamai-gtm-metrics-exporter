@@ -32,9 +32,6 @@ const (
 	livenessCollectorName = "liveness"
 	// Bounds the days walked in one cycle when catching up across midnight.
 	livenessMaxDaysPerCycle = 3
-	// An error is exposed while its report time is less than this behind the
-	// window end. Ties exposure to Akamai time, so a restart never shows old errors as current.
-	livenessExposure = 5 * time.Minute
 )
 
 type LivenessTMeta struct {
@@ -65,6 +62,7 @@ type GTMLivenessTrafficExporter struct {
 	opts                     PollOptions
 	cache                    *sampleCache
 	targets                  []*livenessTarget
+	now                      func() time.Time
 
 	// Per datacenter histograms and summaries, created on first error.
 	mu         sync.Mutex
@@ -90,6 +88,7 @@ func NewLivenessTrafficCollector(api *APIPool, r *prometheus.Registry, gtmMetric
 		opts:                     opts,
 		cache:                    newSampleCache(opts.CacheTTL),
 		histograms:               make(map[string]prometheus.Histogram),
+		now:                      time.Now,
 		summaries:                make(map[string]prometheus.Summary),
 	}
 	for _, domain := range gtmMetricsConfig.Domains {
@@ -140,7 +139,7 @@ func (l *GTMLivenessTrafficExporter) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect serves the samples fetched by the background poller.
 func (l *GTMLivenessTrafficExporter) Collect(ch chan<- prometheus.Metric) {
-	l.cache.collect(ch, time.Now())
+	l.cache.collect(ch, l.now())
 }
 
 // Start polls the reporting API in the background until ctx is done.
@@ -195,9 +194,9 @@ func (l *GTMLivenessTrafficExporter) pollTarget(ctx context.Context, sess sessio
 		}
 		// Every new row at once: a burst holds one row per test agent, all
 		// within minutes. The cache keeps the latest row per series.
-		now := time.Now()
+		now := l.now()
 		for _, r := range rows {
-			l.processRow(t, r.row, r.ts, windowEnd, now)
+			l.processRow(t, r.row, r.ts, now)
 		}
 		if day.Equal(lastDay) {
 			t.fetchedThrough = windowEnd
@@ -213,6 +212,8 @@ func (l *GTMLivenessTrafficExporter) pollTarget(ctx context.Context, sess sessio
 func (l *GTMLivenessTrafficExporter) fetchNewRows(ctx context.Context, sess session.Session, t *livenessTarget, day time.Time) ([]pendingRow[*LivenessTData], error) {
 	query := url.Values{}
 	query.Set("date", day.Format(GTMTrafficDateFormat))
+	// Without realTime the API returns an arbitrary slice of ~120 rows of the day.
+	query.Set("realTime", "true")
 	if t.cfg.TargetIP != "" {
 		query.Set("targetIp", t.cfg.TargetIP) // takes priority over agentIp
 	} else if t.cfg.AgentIP != "" {
@@ -240,10 +241,10 @@ func (l *GTMLivenessTrafficExporter) fetchNewRows(ctx context.Context, sess sess
 	return rows, nil
 }
 
-func (l *GTMLivenessTrafficExporter) processRow(t *livenessTarget, row *LivenessTData, ts, windowEnd, now time.Time) {
+func (l *GTMLivenessTrafficExporter) processRow(t *livenessTarget, row *LivenessTData, ts, now time.Time) {
 	prop := t.cfg
 	// Rows already older than the exposure are still counted by the histograms.
-	hold := ts.Add(livenessExposure).Sub(windowEnd)
+	hold := ts.Add(l.opts.LivenessExposure).Sub(now)
 	expose := func(key string, m prometheus.Metric) {
 		if hold > 0 {
 			l.cache.putUntil(key, m, now.Add(hold))

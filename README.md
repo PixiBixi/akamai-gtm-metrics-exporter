@@ -169,6 +169,7 @@ Flags:
       --akamai.timeout=30s  Timeout of a single Akamai API request.
       --metrics.ttl=10m     How long the last traffic report sample of a series stays exposed after it was fetched.
       --report.settle-delay=0s  Only read traffic report buckets that ended at least this long ago.
+      --liveness.exposure=15m   How long after it happened a liveness error stays exposed.
       --version           Show application version.
 ```
 
@@ -192,7 +193,7 @@ Flags:
 
 The Akamai GTM Exporter contains collectors to gather traffic information for GTM domain datacenters and properties, as well as property liveness test failures. Each of these collectors has its own configuration, metrics and behaviors.
 
-Collectors poll the Akamai reporting API in the background every `--poll.interval`; a scrape only serves the cached samples and never calls the API. Akamai keeps revising a traffic bucket for over an hour after it first shows in the report window, so an early read is low: `--report.settle-delay` waits for the bucket to settle, at the cost of that much delay. A traffic report row is exposed once fetched and stays exposed for `--metrics.ttl`, or until a newer row replaces it. A liveness error is exposed while its report time is less than 5 minutes behind the report window end, so a restart never shows past errors as current; the histograms and summaries count every error row.
+Collectors poll the Akamai reporting API in the background every `--poll.interval`; a scrape only serves the cached samples and never calls the API. Akamai keeps revising a traffic bucket for over an hour after it first shows in the report window, so an early read is low: `--report.settle-delay` waits for the bucket to settle, at the cost of that much delay. A traffic report row is exposed once fetched and stays exposed for `--metrics.ttl`, or until a newer row replaces it. Liveness reports are read with `realTime=true`: without it the API returns an arbitrary slice of about 120 rows of the day. A liveness error is exposed for `--liveness.exposure` after it happened, so a restart never shows past errors as current; the histograms and summaries count every error row.
 
 | Metric | Description |
 | ------ | ----------- |

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var testOpts = PollOptions{Interval: time.Hour, CacheTTL: time.Hour}
+var testOpts = PollOptions{Interval: time.Hour, CacheTTL: time.Hour, LivenessExposure: 15 * time.Minute}
 
 func dcRow(timestamp string, requests ...int64) *DatacenterTrafficData {
 	row := &DatacenterTrafficData{Timestamp: timestamp}
@@ -209,6 +209,7 @@ func TestLivenessCollectorMetrics(t *testing.T) {
 	f.liveRows["example.akadns.net/www"] = []*LivenessTData{liveRow("2026-10-02T19:42:34Z", 3138, 2503, 60)}
 	reg := prometheus.NewRegistry()
 	c := NewLivenessTrafficCollector(f.pool(t, 1), reg, livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T19:40:00Z"), time.Hour, testOpts)
+	c.now = func() time.Time { return ts("2026-10-02T19:50:00Z") }
 	require.NoError(t, c.poll(context.Background()))
 
 	labels := `{datacenter="3138",domain="example.akadns.net",errorcode="2503",property="www"}`
@@ -237,10 +238,12 @@ func TestLivenessCollectorCrossesMidnight(t *testing.T) {
 	f.livenessWindow = [2]time.Time{ts("2026-07-01T00:00:00Z"), ts("2026-10-01T23:50:00Z")}
 	f.liveRows["example.akadns.net/www"] = []*LivenessTData{liveRow("2026-10-01T23:45:00Z", 3138, 2503, 60)}
 	c := NewLivenessTrafficCollector(f.pool(t, 1), prometheus.NewRegistry(), livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-01T23:40:00Z"), time.Hour, testOpts)
+	c.now = func() time.Time { return ts("2026-10-02T00:20:00Z") }
 	require.NoError(t, c.poll(context.Background()))
 
 	f.mu.Lock()
 	f.livenessWindow[1] = ts("2026-10-02T00:12:00Z")
+	c.now = func() time.Time { return ts("2026-10-02T00:20:00Z") }
 	f.liveRows["example.akadns.net/www"] = append(f.liveRows["example.akadns.net/www"], liveRow("2026-10-02T00:10:00Z", 3138, 2504, 120))
 	f.mu.Unlock()
 	require.NoError(t, c.poll(context.Background()))
@@ -256,6 +259,7 @@ func TestLivenessCollectorFilterQuery(t *testing.T) {
 	cfg := livenessConfig("example.akadns.net", "www")
 	cfg.Domains[0].Liveness[0].TargetIP = "216.22.16.32"
 	c := NewLivenessTrafficCollector(f.pool(t, 1), prometheus.NewRegistry(), cfg, "akamai_gtm_", ts("2026-10-02T19:40:00Z"), time.Hour, testOpts)
+	c.now = func() time.Time { return ts("2026-10-02T19:50:00Z") }
 	require.NoError(t, c.poll(context.Background()))
 
 	assert.Contains(t, collectSamples(t, c),
@@ -280,6 +284,7 @@ func TestLivenessCollectorBurstInOneCycle(t *testing.T) {
 	f.liveRows["example.akadns.net/www"] = burstRows("2026-10-02T21:12:00Z", 30)
 	reg := prometheus.NewRegistry()
 	c := NewLivenessTrafficCollector(f.pool(t, 1), reg, livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T21:00:00Z"), time.Hour, testOpts)
+	c.now = func() time.Time { return ts("2026-10-02T21:20:00Z") }
 	require.NoError(t, c.poll(context.Background()))
 
 	assert.Len(t, collectSamples(t, c), 2, "failures + duration for the one series")
@@ -299,6 +304,7 @@ func TestLivenessCollectorRestartDoesNotReplayOldErrors(t *testing.T) {
 	f.liveRows["example.akadns.net/www"] = burstRows("2026-10-02T21:12:00Z", 30)
 	reg := prometheus.NewRegistry()
 	c := NewLivenessTrafficCollector(f.pool(t, 1), reg, livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T21:00:00Z"), time.Hour, testOpts)
+	c.now = func() time.Time { return ts("2026-10-02T22:00:00Z") }
 	require.NoError(t, c.poll(context.Background()))
 
 	assert.Empty(t, collectSamples(t, c))
@@ -307,14 +313,16 @@ func TestLivenessCollectorRestartDoesNotReplayOldErrors(t *testing.T) {
 	require.Len(t, mfs, 2)
 }
 
-func TestLivenessExposureFollowsReportTime(t *testing.T) {
+func TestLivenessExposureFollowsEventTime(t *testing.T) {
 	c := NewLivenessTrafficCollector(nil, prometheus.NewRegistry(), livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T21:00:00Z"), time.Hour, testOpts)
-	now := time.Now()
-	c.processRow(c.targets[0], liveRow("2026-10-02T21:12:00Z", 3135, 2503, 60), ts("2026-10-02T21:12:00Z"), ts("2026-10-02T21:14:00Z"), now)
+	now := ts("2026-10-02T21:20:00Z")
+	c.processRow(c.targets[0], liveRow("2026-10-02T21:12:00Z", 3135, 2503, 60), ts("2026-10-02T21:12:00Z"), now)
 	require.Len(t, c.cache.entries, 2)
 	for _, e := range c.cache.entries {
-		assert.Equal(t, now.Add(3*time.Minute), e.expires, "exposed until the window end is 5 min past the row")
+		assert.Equal(t, ts("2026-10-02T21:27:00Z"), e.expires, "exposed until 15 min after the error")
 	}
+	c.processRow(c.targets[0], liveRow("2026-10-02T21:04:00Z", 3136, 2503, 60), ts("2026-10-02T21:04:00Z"), now)
+	assert.Len(t, c.cache.entries, 2, "an error older than the exposure is not shown")
 }
 
 func TestSampleCacheExpiry(t *testing.T) {
