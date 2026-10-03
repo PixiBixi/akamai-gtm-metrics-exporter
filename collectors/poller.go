@@ -259,6 +259,7 @@ type sampleCache struct {
 
 type cacheEntry struct {
 	metric  prometheus.Metric
+	value   float64
 	expires time.Time
 }
 
@@ -274,6 +275,22 @@ func (c *sampleCache) putUntil(key string, m prometheus.Metric, expires time.Tim
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[key] = cacheEntry{metric: m, expires: expires}
+}
+
+// putMax keeps the highest value exposed for a series until the latest expiry.
+func (c *sampleCache) putMax(key string, value float64, build func(float64) prometheus.Metric, expires, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if e, ok := c.entries[key]; ok && now.Before(e.expires) {
+		if e.expires.After(expires) {
+			expires = e.expires
+		}
+		if e.value >= value {
+			c.entries[key] = cacheEntry{metric: e.metric, value: e.value, expires: expires}
+			return
+		}
+	}
+	c.entries[key] = cacheEntry{metric: build(value), value: value, expires: expires}
 }
 
 func (c *sampleCache) collect(ch chan<- prometheus.Metric, now time.Time) {

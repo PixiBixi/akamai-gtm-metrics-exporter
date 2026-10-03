@@ -429,3 +429,22 @@ func TestDatacenterCollectorSettleDelay(t *testing.T) {
 	assert.Equal(t, float64(cutoff.Add(-trafficBucket).Unix()), got.value, "last settled bucket is the one ending at the cutoff")
 	assert.Equal(t, cutoff, c.targets[0].fetchedThrough)
 }
+
+// A burst mixes rows with and without a duration: the longest one is exposed.
+func TestLivenessDurationIsTheLongestOfTheExposure(t *testing.T) {
+	c := NewLivenessTrafficCollector(nil, prometheus.NewRegistry(), livenessConfig("example.akadns.net", "www"), "akamai_gtm_", ts("2026-10-02T21:00:00Z"), time.Hour, testOpts)
+	c.now = func() time.Time { return ts("2026-10-02T21:20:00Z") }
+	now := c.now()
+	key := `akamai_gtm_property_liveness_errors_datacenter_failure_duration{datacenter="3135",domain="example.akadns.net",errorcode="2503",property="www"}`
+	for i, d := range []int64{0, 600, 0, 0} {
+		at := ts("2026-10-02T21:12:00Z").Add(time.Duration(i) * time.Second)
+		c.processRow(c.targets[0], liveRow(at.Format(GTMTrafficLongTimeFormat), 3135, 2503, d), at, now)
+	}
+	assert.Equal(t, 600.0, collectSamples(t, c)[key].value)
+
+	// Once the 600 s failure has left the exposure, a later row shows on its own.
+	later := ts("2026-10-02T21:40:00Z")
+	c.now = func() time.Time { return later }
+	c.processRow(c.targets[0], liveRow("2026-10-02T21:39:00Z", 3135, 2503, 120), ts("2026-10-02T21:39:00Z"), later)
+	assert.Equal(t, 120.0, collectSamples(t, c)[key].value)
+}

@@ -279,10 +279,15 @@ func (l *GTMLivenessTrafficExporter) processRow(t *livenessTarget, row *Liveness
 			prometheus.CounterValue, 1, labelValues...)
 		expose(seriesKey(failuresName, labelValues...), withReportTimestamp(l.GTMConfig, ts, failures))
 
-		duration := prometheus.MustNewConstMetric(
-			prometheus.NewDesc(durationName, "Datacenter failure duration (per domain, property, datacenter)", labelNames, nil),
-			prometheus.GaugeValue, float64(dc.Duration), labelValues...)
-		expose(seriesKey(durationName, labelValues...), withReportTimestamp(l.GTMConfig, ts, duration))
+		// A burst mixes rows with and without a duration; expose the longest
+		// failure of the exposure window, not whichever row came last.
+		if hold > 0 {
+			durationDesc := prometheus.NewDesc(durationName, "Datacenter failure duration (per domain, property, datacenter)", labelNames, nil)
+			values := labelValues
+			l.cache.putMax(seriesKey(durationName, labelValues...), float64(dc.Duration), func(v float64) prometheus.Metric {
+				return withReportTimestamp(l.GTMConfig, ts, prometheus.MustNewConstMetric(durationDesc, prometheus.GaugeValue, v, values...))
+			}, now.Add(hold), now)
+		}
 
 		l.observe(t.domain, prop.PropertyName, dc.DatacenterID, float64(dc.Duration))
 	}
