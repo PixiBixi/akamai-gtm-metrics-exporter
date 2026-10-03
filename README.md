@@ -199,7 +199,7 @@ Collectors poll the Akamai reporting API in the background every `--poll.interva
 | ------ | ----------- |
 | `akamai_gtm_metrics_exporter_poll_duration_seconds{collector}` | Duration of the last poll cycle |
 | `akamai_gtm_metrics_exporter_last_successful_poll_timestamp_seconds{collector}` | Unix time of the last poll cycle whose report window could be fetched |
-| `akamai_gtm_metrics_exporter_api_requests_total{collector,endpoint,outcome}` | Akamai API requests, `endpoint` is `window` or `report`, `outcome` is `success` or `error` |
+| `akamai_gtm_metrics_exporter_api_requests_total{collector,api,outcome}` | Akamai API requests, `api` is `window` or `report`, `outcome` is `success` or `error` |
 
 ### Datacenter traffic
 

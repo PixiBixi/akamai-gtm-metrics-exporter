@@ -58,8 +58,8 @@ var (
 	apiRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: exporterNamespace,
 		Name:      "api_requests_total",
-		Help:      "Akamai reporting API requests, by endpoint and outcome.",
-	}, []string{"collector", "endpoint", "outcome"})
+		Help:      "Akamai reporting API requests, by API (window or report) and outcome.",
+	}, []string{"collector", "api", "outcome"})
 )
 
 // RegisterPollMetrics registers the exporter self-monitoring metrics.
@@ -126,7 +126,7 @@ enqueue:
 }
 
 // getJSON performs a signed GET and decodes a 200 response into out.
-func getJSON(ctx context.Context, sess session.Session, collector, endpoint, path string, query url.Values, out interface{}) error {
+func getJSON(ctx context.Context, sess session.Session, collector, api, path string, query url.Values, out interface{}) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return err
@@ -146,7 +146,7 @@ func getJSON(ctx context.Context, sess session.Session, collector, endpoint, pat
 	if err != nil {
 		outcome = "error"
 	}
-	apiRequests.WithLabelValues(collector, endpoint, outcome).Inc()
+	apiRequests.WithLabelValues(collector, api, outcome).Inc()
 	return err
 }
 
